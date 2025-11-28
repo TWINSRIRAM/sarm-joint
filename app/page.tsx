@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Angles = {
   joint1: number;
@@ -12,38 +12,38 @@ type Angles = {
 
 export default function Page() {
   const [device, setDevice] = useState<any>(null);
-  const [cmdChar, setCmdChar] = useState<any>(null);
-  const [statusChar, setStatusChar] = useState<any>(null);
-
   const [connected, setConnected] = useState(false);
+
+  const cmdRef = useRef<any>(null);
+  const statusRef = useRef<any>(null);
 
   const [angles, setAngles] = useState<Angles>({
     joint1: 90,
     joint2: 90,
     joint3: 90,
     joint4: 90,
-    joint5: 90
+    joint5: 90,
   });
 
-  // UUIDs (MATCH YOUR ESP32 CODE)
+  // BLE UUIDs (match ESP32)
   const SERVICE_UUID = "12345678-1234-5678-1234-56789abcdef0";
   const CMD_UUID = "12345678-1234-5678-1234-56789abcdef1";
   const STATUS_UUID = "12345678-1234-5678-1234-56789abcdef2";
 
-  // ------------------------------
-  // CONNECT TO ESP32 BLE
-  // ------------------------------
+  /* ---------------------------------------------------------
+     CONNECT TO ESP32
+  --------------------------------------------------------- */
   const connect = async () => {
     try {
       const dev = await navigator.bluetooth.requestDevice({
         acceptAllDevices: true,
-        optionalServices: [SERVICE_UUID]
+        optionalServices: [SERVICE_UUID],
       });
 
       setDevice(dev);
 
       const gatt = await dev.gatt?.connect();
-      if (!gatt) return;
+      if (!gatt) throw new Error("GATT connection failed");
 
       setConnected(true);
 
@@ -51,137 +51,139 @@ export default function Page() {
       const cmd = await service.getCharacteristic(CMD_UUID);
       const status = await service.getCharacteristic(STATUS_UUID);
 
-      setCmdChar(cmd);
-      setStatusChar(status);
+      cmdRef.current = cmd;
+      statusRef.current = status;
 
       await status.startNotifications();
       status.addEventListener("characteristicvaluechanged", handleStatus);
 
-      console.log("Connected to", dev.name);
+      console.log("Connected to:", dev.name);
     } catch (err) {
-      console.error("Connection error:", err);
-      alert("BLE Connect Failed: " + String(err));
+      console.error(err);
+      alert("Connection failed:\n" + String(err));
     }
   };
 
-  // ------------------------------
-  // HANDLE STATUS NOTIFY FROM ESP32
-  // ------------------------------
-  const handleStatus = (event: Event) => {
-    const ch = event.target as BluetoothRemoteGATTCharacteristic;
-    const value = ch.value;
+  /* ---------------------------------------------------------
+     HANDLE STATUS NOTIFICATIONS
+  --------------------------------------------------------- */
+  const handleStatus = (event: any) => {
+    const value = event.target.value;
     if (!value) return;
 
     const text = new TextDecoder().decode(value.buffer);
+
     try {
-      const doc = JSON.parse(text);
-      if (doc.joints) {
+      const json = JSON.parse(text);
+
+      if (Array.isArray(json.joints)) {
         setAngles({
-          joint1: doc.joints[0],
-          joint2: doc.joints[1],
-          joint3: doc.joints[2],
-          joint4: doc.joints[3],
-          joint5: doc.joints[4]
+          joint1: json.joints[0],
+          joint2: json.joints[1],
+          joint3: json.joints[2],
+          joint4: json.joints[3],
+          joint5: json.joints[4],
         });
       }
-    } catch (err) {
-      console.error("Parse Error:", err, text);
+    } catch {
+      console.log("Invalid JSON:", text);
     }
   };
 
-  // ------------------------------
-  // SEND JSON COMMANDS
-  // ------------------------------
+  /* ---------------------------------------------------------
+     SEND JSON COMMAND (SAFE)
+  --------------------------------------------------------- */
   const sendJson = async (data: any) => {
     try {
-      if (!cmdChar) return;
+      if (!cmdRef.current) return;
 
-      const json = JSON.stringify(data);
-      const buffer = new TextEncoder().encode(json);
+      const buf = new TextEncoder().encode(JSON.stringify(data));
 
-      if ((cmdChar as any).writeValueWithoutResponse) {
-        await (cmdChar as any).writeValueWithoutResponse(buffer);
+      if (typeof cmdRef.current.writeValueWithoutResponse === "function") {
+        await cmdRef.current.writeValueWithoutResponse(buf);
       } else {
-        await cmdChar.writeValue(buffer);
+        await cmdRef.current.writeValue(buf);
       }
-
-      console.log("Sent:", json);
     } catch (err) {
-      console.error("Send Error:", err);
+      console.error("BLE Write Error:", err);
     }
   };
 
-  // SINGLE JOINT UPDATE
+  /* ---------------------------------------------------------
+     ARM JOINT UPDATE
+  --------------------------------------------------------- */
   const updateJoint = (key: keyof Angles, value: number) => {
-    setAngles((prev) => ({ ...prev, [key]: value }));
+    setAngles((old) => ({ ...old, [key]: value }));
 
     const index = Number(key.replace("joint", "")) - 1;
 
     sendJson({
       cmd: "set_joint",
       jointId: index,
-      angle: value
+      angle: value,
     });
   };
 
-  // FULL POSE BUTTON
+  /* ---------------------------------------------------------
+     FULL POSE
+  --------------------------------------------------------- */
   const sendFullPose = () => {
     sendJson({
       cmd: "set_pose",
-      joints: Object.values(angles)
+      joints: Object.values(angles),
     });
   };
 
-  // HOME BUTTON
-  const sendHome = () => {
-    sendJson({ cmd: "home" });
-  };
+  /* ---------------------------------------------------------
+     HOME
+  --------------------------------------------------------- */
+  const sendHome = () => sendJson({ cmd: "home" });
 
-  // -----------------------------------------
-  // AUTO-CLEAN WHEN DEVICE DISCONNECTS
-  // -----------------------------------------
+  /* ---------------------------------------------------------
+     CLEANUP
+  --------------------------------------------------------- */
   useEffect(() => {
     if (!device) return;
 
-    const disconnectHandler = () => {
+    const disc = () => {
       setConnected(false);
-      setCmdChar(null);
-      setStatusChar(null);
+      cmdRef.current = null;
+      statusRef.current = null;
       setDevice(null);
       console.log("Disconnected");
     };
 
-    device.addEventListener("gattserverdisconnected", disconnectHandler);
-
-    return () => device.removeEventListener("gattserverdisconnected", disconnectHandler);
+    device.addEventListener("gattserverdisconnected", disc);
+    return () => device.removeEventListener("gattserverdisconnected", disc);
   }, [device]);
 
-  // -----------------------------------------
-  // UI
-  // -----------------------------------------
+  /* ---------------------------------------------------------
+     UI
+  --------------------------------------------------------- */
   return (
-    <main className="flex flex-col items-center min-h-screen bg-gray-900 text-white p-6">
-      <h1 className="text-2xl font-semibold mb-4">SARM 5-DOF BLE Controller</h1>
+    <main className="min-h-screen bg-black text-white p-6 flex flex-col items-center">
+      <h1 className="text-2xl font-bold mb-4">SARM 5-DOF BLE Arm Controller</h1>
 
       {!connected ? (
         <button
           onClick={connect}
-          className="px-5 py-3 bg-blue-600 rounded-md mb-6"
+          className="bg-blue-600 px-6 py-3 rounded-lg"
         >
           Connect to SARM
         </button>
       ) : (
-        <div className="text-green-400 mb-4">Connected ✔</div>
+        <p className="text-green-400 mb-4">Connected ✔</p>
       )}
 
-      {/* Sliders */}
-      <div className="w-full max-w-2xl space-y-6">
+      {/* ------- ARM SLIDERS ------- */}
+      <div className="w-full max-w-2xl space-y-5 mt-6">
         {(Object.keys(angles) as (keyof Angles)[]).map((k) => (
-          <div key={k} className="bg-gray-800 p-4 rounded-md shadow-md">
+          <div key={k} className="bg-gray-800 p-4 rounded-lg">
             <div className="flex justify-between mb-2">
-              <div className="font-medium">{k.toUpperCase()}</div>
-              <div>{angles[k]}°</div>
+              <span>{k.toUpperCase()}</span>
+              <span>{angles[k]}°</span>
             </div>
+
             <input
               type="range"
               min={0}
@@ -194,25 +196,21 @@ export default function Page() {
         ))}
       </div>
 
-      {/* Buttons */}
-      <div className="flex gap-3 mt-6">
+      {/* BUTTONS */}
+      <div className="flex gap-4 mt-6">
         <button
           onClick={sendFullPose}
-          className="px-4 py-2 bg-blue-500 rounded-md"
+          className="bg-blue-500 px-6 py-2 rounded-lg"
         >
           Send Full Pose
         </button>
 
         <button
           onClick={sendHome}
-          className="px-4 py-2 bg-red-600 rounded-md"
+          className="bg-red-600 px-6 py-2 rounded-lg"
         >
           HOME
         </button>
-      </div>
-
-      <div className="text-xs text-gray-500 mt-6">
-        SERVICE_UUID: {SERVICE_UUID}
       </div>
     </main>
   );
