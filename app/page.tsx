@@ -11,9 +11,10 @@ type Angles = {
 };
 
 export default function Page() {
-  const [device, setDevice] = useState<BluetoothDevice | null>(null);
-  const [cmdChar, setCmdChar] = useState<BluetoothRemoteGATTCharacteristic | null>(null);
-  const [statusChar, setStatusChar] = useState<BluetoothRemoteGATTCharacteristic | null>(null);
+  const [device, setDevice] = useState<any>(null);
+  const [cmdChar, setCmdChar] = useState<any>(null);
+  const [statusChar, setStatusChar] = useState<any>(null);
+
   const [connected, setConnected] = useState(false);
 
   const [angles, setAngles] = useState<Angles>({
